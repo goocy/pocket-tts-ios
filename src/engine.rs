@@ -221,6 +221,10 @@ impl PocketTTSEngine {
             // Send chunk
             handler.on_audio_chunk(chunk);
 
+            if *self.is_cancelled.lock().unwrap() {
+                return false;
+            }
+
             if is_final {
                 handler.on_complete();
             }

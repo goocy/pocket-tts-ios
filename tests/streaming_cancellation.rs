@@ -6,11 +6,19 @@ use std::sync::{
     Arc,
 };
 
+#[derive(Clone, Copy)]
+enum CancelOn {
+    FirstChunk,
+    FinalChunk,
+    Never,
+}
+
 struct Handler {
     engine: Arc<PocketTTSEngine>,
     chunks: Arc<AtomicUsize>,
     completed: Arc<AtomicUsize>,
-    cancel_after_first: bool,
+    cancel_on: CancelOn,
+    cancelled_at: Arc<AtomicUsize>,
 }
 
 impl TTSEventHandler for Handler {
@@ -19,7 +27,10 @@ impl TTSEventHandler for Handler {
             return;
         }
         let count = self.chunks.fetch_add(1, Ordering::SeqCst) + 1;
-        if self.cancel_after_first && count == 1 {
+        if matches!(self.cancel_on, CancelOn::FirstChunk) && count == 1
+            || matches!(self.cancel_on, CancelOn::FinalChunk) && chunk.is_final
+        {
+            self.cancelled_at.store(count, Ordering::SeqCst);
             self.engine.cancel();
         }
     }
@@ -38,9 +49,15 @@ fn cancelling_stops_audio_and_allows_the_next_stream() {
     let model_dir = std::env::var("POCKET_TTS_MODEL_DIR").expect("set POCKET_TTS_MODEL_DIR");
     let engine = Arc::new(PocketTTSEngine::new(model_dir).unwrap());
     let text = "The response button reads the message aloud. Tap it again to stop, or choose another response to switch what you are listening to. The text stays on your phone throughout the process.";
-    for cancel_after_first in [true, false] {
+    for cancel_on in [
+        CancelOn::FirstChunk,
+        CancelOn::Never,
+        CancelOn::FinalChunk,
+        CancelOn::Never,
+    ] {
         let chunks = Arc::new(AtomicUsize::new(0));
         let completed = Arc::new(AtomicUsize::new(0));
+        let cancelled_at = Arc::new(AtomicUsize::new(0));
         engine
             .start_true_streaming(
                 text.into(),
@@ -48,12 +65,21 @@ fn cancelling_stops_audio_and_allows_the_next_stream() {
                     engine: engine.clone(),
                     chunks: chunks.clone(),
                     completed: completed.clone(),
-                    cancel_after_first,
+                    cancel_on,
+                    cancelled_at: cancelled_at.clone(),
                 }),
             )
             .unwrap();
-        if cancel_after_first {
-            assert_eq!(chunks.load(Ordering::SeqCst), 1, "audio continued after cancellation");
+        if !matches!(cancel_on, CancelOn::Never) {
+            assert!(cancelled_at.load(Ordering::SeqCst) > 0, "cancellation callback was not reached");
+            assert_eq!(
+                chunks.load(Ordering::SeqCst),
+                cancelled_at.load(Ordering::SeqCst),
+                "audio continued after cancellation"
+            );
+            if matches!(cancel_on, CancelOn::FirstChunk) {
+                assert_eq!(chunks.load(Ordering::SeqCst), 1, "audio continued after cancellation");
+            }
             assert_eq!(completed.load(Ordering::SeqCst), 0, "cancelled speech reported completion");
         } else {
             assert!(chunks.load(Ordering::SeqCst) > 1, "the next stream stayed cancelled");
