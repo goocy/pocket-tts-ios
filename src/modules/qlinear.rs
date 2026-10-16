@@ -34,6 +34,21 @@ pub fn clear_registry() {
 pub struct QLinear {
     inner: QMatMul,
     bias: Option<Tensor>,
+    /// The same weight expanded to f32, used for inputs of more than
+    /// one position. See `dense_prefill`.
+    dense: Option<Tensor>,
+}
+
+/// Whether to keep an f32 copy of each quantized weight for multi-position
+/// inputs — the text read-in before a sentence's first frame.
+///
+/// Q8_0 wins at one position per call because that is bound by reading the
+/// weights, and it reads a quarter as much. A read-in of ninety tokens is
+/// bound by arithmetic instead, where candle's quantized kernel is a row of
+/// dot products and the f32 path is a proper GEMM. The price is the f32 copy:
+/// 302 MB for FlowLM. `ALOUD_DENSE_PREFILL=1` turns it on.
+pub fn dense_prefill() -> bool {
+    matches!(std::env::var("ALOUD_DENSE_PREFILL").as_deref(), Ok("1"))
 }
 
 pub fn selected_dtype() -> Option<GgmlDType> {
@@ -63,13 +78,21 @@ impl QLinear {
             }
         };
         let bias = if with_bias { Some(vb.get(out_dim, "bias")?) } else { None };
-        Ok(Self { inner, bias })
+        let dense = match &inner {
+            QMatMul::QTensor(q) if dense_prefill() => Some(q.dequantize(&q.device())?.t()?.contiguous()?),
+            _ => None,
+        };
+        Ok(Self { inner, bias, dense })
     }
 }
 
 impl Module for QLinear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let y = self.inner.forward(x)?;
+        let positions = if x.rank() == 3 { x.dim(1)? } else { 1 };
+        let y = match &self.dense {
+            Some(w) if positions > 1 => x.broadcast_matmul(w)?,
+            _ => self.inner.forward(x)?,
+        };
         match &self.bias {
             Some(b) => y.broadcast_add(b),
             None => Ok(y),
