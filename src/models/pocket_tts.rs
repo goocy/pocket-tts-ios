@@ -32,6 +32,12 @@ pub struct PocketTTSModel {
     /// When set, these are used instead of random noise during FlowNet generation.
     /// Each tensor corresponds to one autoregressive step.
     noise_tensors: Option<Vec<Tensor>>,
+    /// Where the Mimi decoder lives. Metal when `ALOUD_MIMI_METAL=1`
+    /// and the build has the metal feature; otherwise the model device.
+    /// The FlowLM stays on the CPU either way: its per-frame matvecs are too
+    /// small to amortise GPU dispatch, while Mimi's convolutions over a whole
+    /// sentence are exactly what a GPU is for.
+    mimi_device: Device,
 }
 
 impl PocketTTSModel {
@@ -78,13 +84,44 @@ impl PocketTTSModel {
             latent_dim: flowlm_config.latent_dim,
             ..MimiConfig::default()
         };
-        let mimi = MimiDecoder::new(mimi_config, vb.pp("mimi"))
+        let mimi_device = if std::env::var("ALOUD_MIMI_METAL").map(|v| v == "1").unwrap_or(false) {
+            match Device::new_metal(0) {
+                Ok(d) => {
+                    eprintln!("[Mimi] decoder on Metal");
+                    d
+                },
+                Err(e) => {
+                    eprintln!("[Mimi] Metal unavailable ({}), decoder on CPU", e);
+                    device.clone()
+                },
+            }
+        } else {
+            device.clone()
+        };
+        let vb_mimi = if mimi_device.same_device(device) {
+            vb.clone()
+        } else if let Some(tensors) = &plain {
+            let moved = tensors
+                .iter()
+                .filter(|(k, _)| k.starts_with("mimi."))
+                .map(|(k, v)| Ok((k.clone(), v.to_device(&mimi_device)?)))
+                .collect::<candle_core::Result<std::collections::HashMap<String, Tensor>>>()
+                .map_err(|e| PocketTTSError::ModelLoadFailed(e.to_string()))?;
+            VarBuilder::from_tensors(moved, DType::F32, &mimi_device)
+        } else {
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(&[&model_path], DType::F32, &mimi_device)
+                    .map_err(|e| PocketTTSError::ModelLoadFailed(e.to_string()))?
+            }
+        };
+        let mimi = MimiDecoder::new(mimi_config, vb_mimi.pp("mimi"))
             .map_err(|e| PocketTTSError::ModelLoadFailed(format!("Mimi: {}", e)))?;
         crate::modules::qlinear::clear_registry();
 
         Ok(Self {
             flowlm,
             mimi,
+            mimi_device,
             tokenizer,
             voice_bank,
             device: device.clone(),
@@ -333,10 +370,16 @@ impl PocketTTSModel {
         // IMPORTANT: The decoder transformer uses NON-CAUSAL attention, so it must
         // process the full sequence at once (not frame-by-frame with KV cache)
         eprintln!("[PocketTTS] decoding with Mimi (batch transformer, streaming SEANet)...");
+        let latents = latents
+            .to_device(&self.mimi_device)
+            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
         let audio = self
             .mimi
             .forward_streaming(&latents)
             .map_err(|e| PocketTTSError::InferenceFailed(format!("Mimi: {}", e)))?;
+        let audio = audio
+            .to_device(&self.device)
+            .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
         eprintln!("[PocketTTS] audio tensor shape: {:?}", audio.dims());
 
         // Note: Amplitude scaling is no longer needed after fixing SEANet to use batch mode
