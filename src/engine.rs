@@ -195,13 +195,12 @@ impl PocketTTSEngine {
         let model = model_guard.as_mut().ok_or(PocketTTSError::ModelNotLoaded)?;
 
         let sample_rate = model.sample_rate();
-        let is_cancelled = Arc::new(Mutex::new(false));
-        let is_cancelled_clone = is_cancelled.clone();
 
         // True streaming synthesis with callback
         let result = model.synthesize_true_streaming(&text, |samples, is_final| {
-            // Check cancellation
-            if *is_cancelled_clone.lock().unwrap() {
+            // The flag `cancel()` sets. `cancel` takes only this lock, never
+            // the model's, so it gets through while the render holds the model.
+            if *self.is_cancelled.lock().unwrap() {
                 return false;
             }
 
