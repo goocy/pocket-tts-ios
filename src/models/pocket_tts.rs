@@ -566,10 +566,13 @@ impl PocketTTSModel {
                 // Add latent to current batch
                 current_batch.borrow_mut().push(latent.clone());
 
-                // Decode when batch is full or at EOS
-                let batch_ready = current_batch.borrow().len() >= decode_batch_size || is_eos;
+                // Decode when the batch is full. EOS is not a reason to: the
+                // generator runs `frames_after_eos` more steps, and what is
+                // left when it stops is flushed below, marked final.
+                let _ = is_eos;
+                let batch_ready = current_batch.borrow().len() >= decode_batch_size;
 
-                if batch_ready && !current_batch.borrow().is_empty() {
+                if batch_ready {
                     let batch: Vec<Tensor> = current_batch.borrow_mut().drain(..).collect();
 
                     // Concatenate batch latents: [1, n, 32]
@@ -618,7 +621,7 @@ impl PocketTTSModel {
                     };
 
                     // Callback with audio chunk directly
-                    if !audio_vec.is_empty() && !chunk_callback(&audio_vec, is_eos) {
+                    if !audio_vec.is_empty() && !chunk_callback(&audio_vec, false) {
                         *should_continue.borrow_mut() = false;
                         return LatentStreamControl::Stop;
                     }
@@ -638,6 +641,30 @@ impl PocketTTSModel {
 
         // Handle FlowLM errors
         result.map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM streaming: {}", e)))?;
+
+        // The tail: whatever the generator produced after the last full batch,
+        // including the `frames_after_eos` latents after EOS. The last chunk is
+        // always sent, empty if need be, so the receiver hears `is_final`
+        // exactly once.
+        if !*should_continue.borrow() {
+            return Ok(());
+        }
+        let rest: Vec<Tensor> = current_batch.borrow_mut().drain(..).collect();
+        let mut tail: Vec<f32> = Vec::new();
+        if !rest.is_empty() {
+            let infer = |e: candle_core::Error| PocketTTSError::InferenceFailed(e.to_string());
+            let latents = Tensor::cat(&rest, 1).map_err(infer)?;
+            let latents = latents
+                .broadcast_mul(&emb_std)
+                .and_then(|t| t.broadcast_add(&emb_mean))
+                .map_err(infer)?;
+            let audio = self
+                .mimi
+                .forward_streaming_stateful(&latents, &mut mimi_state.borrow_mut())
+                .map_err(infer)?;
+            tail = audio.squeeze(0).and_then(|a| a.to_vec1()).map_err(infer)?;
+        }
+        chunk_callback(&tail, true);
 
         Ok(())
     }
