@@ -763,6 +763,14 @@ impl FlowLM {
                 eos_step = Some(step);
             }
 
+            // Stop *before* sampling this step's latent, which is where
+            // `generate_latents` stops, so both paths give the same length.
+            if let Some(eos) = eos_step {
+                if step >= eos + frames_after_eos {
+                    break;
+                }
+            }
+
             // Generate next latent via FlowNet
             let cond = last_hidden.unsqueeze(1)?;
             // Derive per-step seed for different-but-deterministic noise at each step
@@ -783,13 +791,6 @@ impl FlowLM {
             // Check early termination from callback
             if control == LatentStreamControl::Stop {
                 break;
-            }
-
-            // Check EOS-based termination
-            if let Some(eos) = eos_step {
-                if step >= eos + frames_after_eos {
-                    break;
-                }
             }
 
             current_latent = next_normalized;

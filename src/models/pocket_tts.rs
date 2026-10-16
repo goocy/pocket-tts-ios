@@ -507,7 +507,9 @@ impl PocketTTSModel {
         self.flowlm.reset_cache();
         self.mimi.reset_decoder_cache();
 
-        let num_flow_steps = self.config.consistency_steps.max(1) as usize;
+        // One flow step, as `synthesize` uses, so that both paths sample the
+        // same latents from the same config.
+        let num_flow_steps = 1;
         let seed = if self.config.use_fixed_seed {
             Some(self.config.seed as u64)
         } else {
