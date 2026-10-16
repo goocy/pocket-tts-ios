@@ -107,7 +107,7 @@ import PocketTTS
 let engine = try PocketTTSEngine(modelPath: modelPath)
 
 // Configure
-let config = TTSConfig(voiceIndex: 0, temperature: 0.7, speed: 1.0)
+let config = TTSConfig(voiceId: "alba", temperature: 0.7, speed: 1.0)
 try engine.configure(config: config)
 
 // Synthesize

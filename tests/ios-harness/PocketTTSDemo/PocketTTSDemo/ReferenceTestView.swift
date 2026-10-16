@@ -213,7 +213,7 @@ class ReferenceTestViewModel: ObservableObject {
             do {
                 print("[ReferenceTest] Noise-matched generation for \(noiseId) (seed \(seed)): \(text)")
                 let result = try engine.synthesizeNoiseMatched(
-                    text: text, voiceIndex: 0, noiseDir: noiseDir, phraseId: noiseId, seed: seed)
+                    text: text, voiceId: "alba", noiseDir: noiseDir, phraseId: noiseId, seed: seed)
                 let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
 
                 self.generationTimeMs = elapsed

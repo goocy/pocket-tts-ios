@@ -27,6 +27,10 @@ pub struct PocketTTSModel {
     voice_bank: VoiceBank,
     device: Device,
     config: TTSConfig,
+    /// `config.voice_id` resolved against `voice_bank` by
+    /// `configure`, so the lookup happens once, against the bank that is
+    /// loaded, and a stale index can never reach a render.
+    voice_slot: usize,
     custom_voice: Option<VoiceEmbedding>,
     /// Pre-loaded noise tensors for correlation testing.
     /// When set, these are used instead of random noise during FlowNet generation.
@@ -126,15 +130,38 @@ impl PocketTTSModel {
             voice_bank,
             device: device.clone(),
             config: TTSConfig::default(),
+            voice_slot: 0,
             custom_voice: None,
             noise_tensors: None,
         })
     }
 
     /// Configure synthesis parameters
+    ///
+    /// Also resolves `config.voice_id` against the loaded bank. A voice that
+    /// is not installed is refused here, by name, instead of falling through
+    /// to a render with no voice embedding at all — which is what an
+    /// out-of-range index used to do at the four `voice_bank.get` sites below,
+    /// silently.
     pub fn configure(&mut self, config: TTSConfig) -> std::result::Result<(), PocketTTSError> {
         config.validate().map_err(PocketTTSError::InvalidConfig)?;
+
+        let slot = if config.voice_id.is_empty() {
+            0
+        } else {
+            self.voice_bank
+                .index_of(&config.voice_id)
+                .ok_or_else(|| {
+                    PocketTTSError::InvalidConfig(format!(
+                        "no voice with id '{}' is installed; loaded voices: {}",
+                        config.voice_id,
+                        self.voice_bank.ids().join(", ")
+                    ))
+                })?
+        };
+
         self.config = config;
+        self.voice_slot = slot;
         Ok(())
     }
 
@@ -317,7 +344,7 @@ impl PocketTTSModel {
         let voice = if let Some(ref custom) = self.custom_voice {
             Some(custom)
         } else {
-            self.voice_bank.get(self.config.voice_index as usize)
+            self.voice_bank.get(self.voice_slot)
         };
         eprintln!("[PocketTTS] voice embedding loaded: {}", voice.is_some());
 
@@ -469,7 +496,7 @@ impl PocketTTSModel {
         let voice = if let Some(ref custom) = self.custom_voice {
             Some(custom)
         } else {
-            self.voice_bank.get(self.config.voice_index as usize)
+            self.voice_bank.get(self.voice_slot)
         };
 
         // Pre-extract normalization tensors (to avoid borrowing self.flowlm in callback)
@@ -696,7 +723,7 @@ impl PocketTTSModel {
         let voice = if let Some(ref custom) = self.custom_voice {
             Some(custom)
         } else {
-            self.voice_bank.get(self.config.voice_index as usize)
+            self.voice_bank.get(self.voice_slot)
         };
 
         // Reset caches for new sequence
@@ -767,7 +794,7 @@ impl PocketTTSModel {
         let voice = if let Some(ref custom) = self.custom_voice {
             Some(custom)
         } else {
-            self.voice_bank.get(self.config.voice_index as usize)
+            self.voice_bank.get(self.voice_slot)
         };
 
         self.flowlm.reset_cache();

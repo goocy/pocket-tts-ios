@@ -7,7 +7,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = TTSConfig::default();
-        assert_eq!(config.voice_index, 0);
+        assert_eq!(config.voice_id, "");
         assert!((config.temperature - 0.7).abs() < 0.001);
         assert!((config.top_p - 0.9).abs() < 0.001);
         assert!((config.speed - 1.0).abs() < 0.001);
@@ -35,14 +35,18 @@ mod tests {
         assert!(config.validate().is_ok());
     }
 
+    // There is no longer an "invalid voice" for `validate`
+    // to find. A voice is named by id, and whether that id is installed is a
+    // question only the loaded `VoiceBank` can answer, so it is checked in
+    // `PocketTTSModel::configure` instead. Any id passes here, including one
+    // that names nothing.
     #[test]
-    fn test_config_validation_invalid_voice() {
+    fn test_config_validation_ignores_voice_id() {
         let config = TTSConfig {
-            voice_index: 8, // Invalid: must be 0-7
+            voice_id: "nobody_by_that_name".to_string(),
             ..Default::default()
         };
-        assert!(config.validate().is_err());
-        assert!(config.validate().unwrap_err().contains("Voice index"));
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -125,7 +129,7 @@ mod tests {
     fn test_config_boundary_values() {
         // Test minimum valid values
         let min_config = TTSConfig {
-            voice_index: 0,
+            voice_id: String::new(),
             temperature: 0.0,
             top_p: 0.1,
             speed: 0.5,
@@ -137,7 +141,7 @@ mod tests {
 
         // Test maximum valid values
         let max_config = TTSConfig {
-            voice_index: 7,
+            voice_id: "vera".to_string(),
             temperature: 1.0,
             top_p: 1.0,
             speed: 2.0,

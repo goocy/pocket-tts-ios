@@ -207,7 +207,7 @@ a noise-injection synth path over UniFFI and bundle the captured noise (future e
 The demo's Compare tab was out of sync with our standard (it synthesized with *random* noise → ~0
 correlation vs the fixed-noise Python reference, reading "-0.05 Very poor"). Fixed by adding a
 noise-matched path end-to-end:
-- **Rust:** `PocketTTSEngine::synthesize_noise_matched(text, voice_index, noise_dir, phrase_id, seed)`
+- **Rust:** `PocketTTSEngine::synthesize_noise_matched(text, voice_id, noise_dir, phrase_id, seed)`
   (engine.rs) — loads captured noise tensors, forces consistency-steps=1 + fixed seed, synthesizes,
   restores config. Exposed in `pocket_tts.udl` → binding `synthesizeNoiseMatched`.
 - **Bundle:** captured noise tensors copied to `ReferenceAudio/noise/` (122 .npy); `manifest.json`

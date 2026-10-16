@@ -22,7 +22,7 @@ dictionary PocketVoiceInfo {
 
 // TTS configuration
 dictionary TTSConfig {
-    u32 voice_index;
+    string voice_id;
     f32 temperature;
     f32 top_p;
     f32 speed;
@@ -93,13 +93,13 @@ interface PocketTTSEngine {
 
     // Synchronous synthesis with specific voice
     [Throws=PocketTTSError]
-    SynthesisResult synthesize_with_voice(string text, u32 voice_index);
+    SynthesisResult synthesize_with_voice(string text, string voice_id);
 
     // Noise-matched synthesis for on-device validation (standard parity check).
     // Loads captured noise tensors ({phrase_id}_noise_step_NNN.npy) from noise_dir and forces
     // consistency-steps=1 + fixed seed, so the output reproduces the reference (correlation ~1.0).
     [Throws=PocketTTSError]
-    SynthesisResult synthesize_noise_matched(string text, u32 voice_index, string noise_dir, string phrase_id, u32 seed);
+    SynthesisResult synthesize_noise_matched(string text, string voice_id, string noise_dir, string phrase_id, u32 seed);
 
     // Start true streaming synthesis (optimized TTFA)
     // Tokenizes all text upfront and yields audio in small batches

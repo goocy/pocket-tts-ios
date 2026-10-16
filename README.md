@@ -94,7 +94,7 @@ let engine = try PocketTTSEngine(modelPath: modelPath)
 
 // Configure
 let config = TTSConfig(
-    voiceIndex: 0,  // Alba
+    voiceId: "alba",  // stem of a file in voices/; "" for the first
     temperature: 0.7,
     topP: 0.9,
     speed: 1.0,

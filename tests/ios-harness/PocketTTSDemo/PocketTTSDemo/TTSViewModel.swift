@@ -54,7 +54,7 @@ class TTSViewModel: ObservableObject {
 
                 // Configure with default voice
                 let config = TtsConfig(
-                    voiceIndex: UInt32(selectedVoice.rawValue),
+                    voiceId: selectedVoice.rawValue,
                     temperature: 0.7,
                     topP: 0.9,
                     speed: 1.0,
@@ -113,7 +113,7 @@ class TTSViewModel: ObservableObject {
 
                 // Update voice if changed
                 let config = TtsConfig(
-                    voiceIndex: UInt32(selectedVoice.rawValue),
+                    voiceId: selectedVoice.rawValue,
                     temperature: 0.7,
                     topP: 0.9,
                     speed: 1.0,
@@ -187,7 +187,7 @@ class TTSViewModel: ObservableObject {
 
                 // Update voice if changed
                 let config = TtsConfig(
-                    voiceIndex: UInt32(selectedVoice.rawValue),
+                    voiceId: selectedVoice.rawValue,
                     temperature: 0.7,
                     topP: 0.9,
                     speed: 1.0,
@@ -445,17 +445,19 @@ class AudioPlayerDelegate: NSObject, AVAudioPlayerDelegate {
 
 // MARK: - Supporting Types
 
-enum TTSVoice: Int, CaseIterable, Identifiable {
-    case alba = 0
-    case marius = 1
-    case javert = 2
-    case jean = 3
-    case fantine = 4
-    case cosette = 5
-    case eponine = 6
-    case azelma = 7
+/// A voice is addressed by its id, the stem of its file in the model's
+/// `voices/` folder.
+enum TTSVoice: String, CaseIterable, Identifiable {
+    case alba
+    case marius
+    case javert
+    case jean
+    case fantine
+    case cosette
+    case eponine
+    case azelma
 
-    var id: Int { rawValue }
+    var id: String { rawValue }
 
     var displayName: String {
         switch self {

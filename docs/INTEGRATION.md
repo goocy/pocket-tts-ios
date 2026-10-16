@@ -75,7 +75,7 @@ let engine = try PocketTTSEngine(modelPath: modelPath)
 
 // Configure voice and settings
 let config = TTSConfig(
-    voiceIndex: 0,      // 0-7 for different voices
+    voiceId: "alba",   // stem of a file in voices/
     temperature: 0.7,   // 0.0-1.0, higher = more variation
     speed: 1.0          // 0.5-2.0, speech rate
 )

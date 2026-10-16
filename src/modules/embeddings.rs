@@ -204,45 +204,86 @@ impl VoiceEmbedding {
     }
 }
 
-/// Voice embedding bank (all 8 built-in voices)
+/// Voice embedding bank: every voice file present in the model's voices folder.
 #[derive(Debug)]
 pub struct VoiceBank {
     voices: Vec<VoiceEmbedding>,
+    /// The id each voice was loaded under, parallel to
+    /// `voices`. A voice is addressed by this id and never by its position,
+    /// so installing or deleting one cannot silently re-point another.
+    ids: Vec<String>,
     voice_dim: usize,
 }
 
 impl VoiceBank {
     pub fn new(voice_dim: usize) -> Self {
         Self {
-            voices: Vec::with_capacity(8),
+            voices: Vec::new(),
+            ids: Vec::new(),
             voice_dim,
         }
     }
 
-    /// Load all voices from a directory
+    /// Load every voice in a directory, each under its own id.
+    ///
+    /// A voice *is* its id: the file stem, so `anna.safetensors` is `"anna"`
+    /// and a variant state such as `anna@0.9.safetensors` is `"anna@0.9"`.
+    /// Addressing a voice by its position among the files that happen to
+    /// exist made an index meaningless the moment a voice was added or
+    /// removed, and a fixed list of eight names left every other voice file
+    /// unloadable. Nothing about the order is load-bearing, and no client has
+    /// to mirror a list kept here.
+    ///
+    /// Files are taken in byte-wise filename order purely so `ids()` reads the
+    /// same way twice; correctness does not depend on it.
     pub fn load_from_dir(dir: &std::path::Path, device: &Device) -> Result<Self> {
-        let voice_names = [
-            "alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma",
-        ];
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().map(|e| e == "safetensors").unwrap_or(false))
+                    .collect()
+            })
+            .unwrap_or_default();
+        paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
-        let mut voices = Vec::with_capacity(8);
+        let mut voices = Vec::with_capacity(paths.len());
+        let mut ids = Vec::with_capacity(paths.len());
         let mut voice_dim = 512; // Default
 
-        for name in &voice_names {
-            let path = dir.join(format!("{}.safetensors", name));
-            if path.exists() {
-                let voice = VoiceEmbedding::from_file(&path, device)?;
-                voice_dim = voice.voice_dim();
-                voices.push(voice);
-            }
+        for path in &paths {
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let voice = VoiceEmbedding::from_file(path, device)?;
+            voice_dim = voice.voice_dim();
+            voices.push(voice);
+            ids.push(id.to_string());
         }
 
-        Ok(Self { voices, voice_dim })
+        Ok(Self {
+            voices,
+            ids,
+            voice_dim,
+        })
     }
 
     /// Get voice by index
     pub fn get(&self, index: usize) -> Option<&VoiceEmbedding> {
         self.voices.get(index)
+    }
+
+    /// The position of the voice loaded under `id`, for
+    /// resolving a configured voice id against the bank that is actually
+    /// loaded. The index never leaves the Rust side.
+    pub fn index_of(&self, id: &str) -> Option<usize> {
+        self.ids.iter().position(|known| known == id)
+    }
+
+    /// Every id in the bank, for error messages and for an app to show what
+    /// is installed.
+    pub fn ids(&self) -> &[String] {
+        &self.ids
     }
 
     /// Number of loaded voices

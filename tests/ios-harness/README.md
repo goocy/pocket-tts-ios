@@ -135,7 +135,7 @@ class PocketTtsEngine {
 
 // Configuration
 struct TtsConfig {
-    var voiceIndex: UInt32       // 0-7 for built-in voices
+    var voiceId: String          // stem of a file in voices/
     var temperature: Float       // Sampling temperature (default: 0.7)
     var topP: Float              // Nucleus sampling (default: 0.9)
     var speed: Float             // Playback speed (default: 1.0)

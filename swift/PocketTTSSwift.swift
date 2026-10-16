@@ -48,7 +48,8 @@ public actor PocketTTSSwift {
 
     /// Configuration options
     public struct Config: Sendable {
-        public var voiceIndex: UInt32
+        /// Stem of a file in the model's `voices/` folder; empty for the first.
+        public var voiceId: String
         public var temperature: Float
         public var topP: Float
         public var speed: Float
@@ -57,7 +58,7 @@ public actor PocketTTSSwift {
         public var seed: UInt32
 
         public init(
-            voiceIndex: UInt32 = 0,
+            voiceId: String = "",
             temperature: Float = 0.7,
             topP: Float = 0.9,
             speed: Float = 1.0,
@@ -65,7 +66,7 @@ public actor PocketTTSSwift {
             useFixedSeed: Bool = false,
             seed: UInt32 = 42
         ) {
-            self.voiceIndex = voiceIndex
+            self.voiceId = voiceId
             self.temperature = temperature
             self.topP = topP
             self.speed = speed
@@ -115,7 +116,7 @@ public actor PocketTTSSwift {
         }
 
         let rustConfig = TtsConfig(
-            voiceIndex: config.voiceIndex,
+            voiceId: config.voiceId,
             temperature: config.temperature,
             topP: config.topP,
             speed: config.speed,
@@ -161,14 +162,14 @@ public actor PocketTTSSwift {
     }
 
     /// Synthesize with specific voice
-    public func synthesize(text: String, voice: UInt32) async throws -> SynthesisResult {
+    public func synthesize(text: String, voice: String) async throws -> SynthesisResult {
         guard let engine else {
             throw PocketTTSSwiftError.modelNotLoaded
         }
 
         return try await withCheckedThrowingContinuation { continuation in
             do {
-                let result = try engine.synthesizeWithVoice(text: text, voiceIndex: voice)
+                let result = try engine.synthesizeWithVoice(text: text, voiceId: voice)
                 continuation.resume(returning: SynthesisResult(
                     audioData: Data(result.audioData),
                     sampleRate: result.sampleRate,

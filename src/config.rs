@@ -14,8 +14,16 @@ pub struct PocketVoiceInfo {
 /// TTS synthesis configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TTSConfig {
-    /// Voice index (0-7 for built-in voices)
-    pub voice_index: u32,
+    /// The id of the voice to speak in — the stem of its file in the model's
+    /// voices folder, so `"anna"`, or a variant state such as `"anna@0.9"`.
+    /// This was a `voice_index`: a position among the voice files that
+    /// happened to exist, which re-pointed to a different speaker (or past the
+    /// end of the bank) as soon as one was installed or deleted.
+    ///
+    /// Resolved against the loaded `VoiceBank` in `PocketTTSModel::configure`, the
+    /// only place that knows which voices are actually loaded. Empty means
+    /// the first voice in the bank.
+    pub voice_id: String,
 
     /// Temperature for sampling (0.0-1.0)
     /// Lower = more deterministic, Higher = more creative
@@ -41,7 +49,7 @@ pub struct TTSConfig {
 impl Default for TTSConfig {
     fn default() -> Self {
         Self {
-            voice_index: 0, // Alba
+            voice_id: String::new(), // whichever voice the bank lists first
             temperature: 0.7,
             top_p: 0.9,
             speed: 1.0,
@@ -72,9 +80,12 @@ impl TTSConfig {
 
     /// Validate configuration values
     pub fn validate(&self) -> Result<(), String> {
-        if self.voice_index > 7 {
-            return Err(format!("Voice index must be 0-7, got {}", self.voice_index));
-        }
+        // The voice is not checked here. The former check rejected any index
+        // above 7, which outlived the eight-voice bank it was written for and
+        // made every voice past the eighth unusable. Whether a voice id exists
+        // is a question only the loaded `VoiceBank` can answer, so
+        // `PocketTTSModel::configure` checks it there and names the ids it
+        // does have.
         if self.temperature < 0.0 || self.temperature > 1.0 {
             return Err(format!("Temperature must be 0.0-1.0, got {}", self.temperature));
         }

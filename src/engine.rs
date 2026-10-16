@@ -105,11 +105,11 @@ impl PocketTTSEngine {
     }
 
     /// Synchronous synthesis with specific voice
-    pub fn synthesize_with_voice(&self, text: String, voice_index: u32) -> Result<SynthesisResult, PocketTTSError> {
+    pub fn synthesize_with_voice(&self, text: String, voice_id: String) -> Result<SynthesisResult, PocketTTSError> {
         // Temporarily set voice
         let original_config = self.get_config();
         let mut new_config = original_config.clone();
-        new_config.voice_index = voice_index;
+        new_config.voice_id = voice_id;
         self.configure(new_config)?;
 
         let result = self.synthesize(text);
@@ -130,7 +130,7 @@ impl PocketTTSEngine {
     pub fn synthesize_noise_matched(
         &self,
         text: String,
-        voice_index: u32,
+        voice_id: String,
         noise_dir: String,
         phrase_id: String,
         seed: u32,
@@ -144,7 +144,7 @@ impl PocketTTSEngine {
         // Save and apply validation config (restored before returning).
         let saved = self.config.lock().unwrap().clone();
         let mut cfg = saved.clone();
-        cfg.voice_index = voice_index;
+        cfg.voice_id = voice_id;
         cfg.use_fixed_seed = true;
         cfg.seed = seed;
         cfg.consistency_steps = 1;
