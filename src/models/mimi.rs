@@ -986,6 +986,13 @@ impl SEANetDecoder {
     }
 }
 
+/// Latent frames per SEANet/upsampler chunk. 1 reproduces the original
+/// frame-by-frame path; 64 is ~5 s of audio per chunk and bounds the widest
+/// activation to ~30 MB. Overridable with `ALOUD_MIMI_CHUNK` for measurement.
+fn mimi_chunk_frames() -> usize {
+    std::env::var("ALOUD_MIMI_CHUNK").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(64)
+}
+
 /// Mimi VAE Decoder
 ///
 /// Converts low-dimensional latents from FlowLM to audio waveforms.
@@ -1186,14 +1193,21 @@ impl MimiDecoder {
             device,
         )?;
 
-        // Process frame by frame through upsampler for proper overlap-add
-        let mut upsampled_chunks: Vec<Tensor> = Vec::with_capacity(seq);
-        for frame_idx in 0..seq {
-            let frame = x.narrow(2, frame_idx, 1)?;
+        // The streaming overlap-add is chunk-size agnostic, so the sequence
+        // goes through in chunks of `mimi_chunk_frames()` frames instead of
+        // `seq` calls of one frame (each of which candle ran as 512 separate
+        // depthwise group convs).
+        let mut upsampled_chunks: Vec<Tensor> = Vec::with_capacity(1);
+        let chunk_frames = mimi_chunk_frames();
+        let mut frame_idx = 0;
+        while frame_idx < seq {
+            let len = usize::min(chunk_frames, seq - frame_idx);
+            let frame = x.narrow(2, frame_idx, len)?;
             let upsampled = self.upsample_convtr.forward_streaming(&frame, &mut upsample_state)?;
             if upsampled.dim(2)? > 0 {
                 upsampled_chunks.push(upsampled);
             }
+            frame_idx += len;
         }
 
         let x = if upsampled_chunks.is_empty() {
@@ -1217,7 +1231,10 @@ impl MimiDecoder {
         let mut seanet_state = self.init_seanet_state(batch, device)?;
 
         let total_len = x.dim(2)?;
-        let chunk_size = 16; // upsampled frames per latent
+        // Chunks of `mimi_chunk_frames()` latent frames rather than one.
+        // Same overlap-add state, same numbers; the convolutions just see a
+        // matrix with thousands of rows instead of sixteen.
+        let chunk_size = 16 * mimi_chunk_frames();
         let num_chunks = (total_len + chunk_size - 1) / chunk_size;
 
         let mut audio_chunks: Vec<Tensor> = Vec::with_capacity(num_chunks);
