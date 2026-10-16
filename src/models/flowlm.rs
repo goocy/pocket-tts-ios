@@ -475,7 +475,31 @@ impl FlowLM {
         // Start with BOS embedding
         let mut current_latent = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?; // [1, 1, 32]
 
+        // Measurement hooks. `ALOUD_TRACE_OUT=<file>` appends, per step,
+        // the transformer's 1024-float conditioning and the 32-float latent it
+        // then sampled (raw little-endian f32). `ALOUD_FORCE_IN=<file>` reads
+        // such a trace and feeds *its* latents back instead of this run's own
+        // (teacher forcing), so two builds see identical inputs at every step
+        // and their conditioning can be compared position by position.
+        let mut trace_out = std::env::var("ALOUD_TRACE_OUT")
+            .ok()
+            .and_then(|p| std::fs::File::create(p).ok())
+            .map(std::io::BufWriter::new);
+        let forced: Option<Vec<Vec<f32>>> = std::env::var("ALOUD_FORCE_IN").ok().and_then(|p| {
+            let bytes = std::fs::read(p).ok()?;
+            let floats: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+            Some(floats.chunks_exact(1056).map(|c| c[1024..].to_vec()).collect())
+        });
+        if let Some(f) = &forced {
+            eprintln!("[FlowLM] teacher-forced from {} latents", f.len());
+        }
+
         for step in 0..max_gen_len {
+            if let Some(f) = &forced {
+                if step >= f.len() {
+                    break;
+                }
+            }
             // DIAGNOSTIC: Capture the raw latent at early steps and around step 36
             if step <= 5 || step == 35 || step == 36 {
                 let lat_flat: Vec<f32> = current_latent.flatten_all()?.to_vec1()?;
@@ -571,7 +595,7 @@ impl FlowLM {
             }
 
             // Check if we should stop (only after min_gen_steps)
-            if let Some(eos) = eos_step {
+            if let (Some(eos), None) = (eos_step, &forced) {
                 if step >= eos + frames_after_eos {
                     eprintln!("[FlowLM] stopping after {} frames post-EOS", frames_after_eos);
                     break;
@@ -595,8 +619,19 @@ impl FlowLM {
                 }
             }
 
+            if let Some(w) = trace_out.as_mut() {
+                use std::io::Write;
+                let mut row: Vec<f32> = cond.flatten_all()?.to_vec1()?;
+                row.extend(next_normalized.flatten_all()?.to_vec1::<f32>()?);
+                for x in row {
+                    w.write_all(&x.to_le_bytes()).ok();
+                }
+            }
             all_latents.push(next_normalized.clone());
-            current_latent = next_normalized;
+            current_latent = match &forced {
+                Some(f) => Tensor::from_vec(f[step].clone(), (1, 1, 32), &self.device)?,
+                None => next_normalized,
+            };
 
             if step % 10 == 0 {
                 eprintln!("[FlowLM] step {}/{}, eos_logit={:.4}", step, max_gen_len, eos_val);
