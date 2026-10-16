@@ -9,6 +9,7 @@ pub mod embeddings;
 pub mod flownet;
 pub mod layer_norm;
 pub mod mlp;
+pub mod qlinear;
 pub mod rotary;
 pub mod streaming;
 

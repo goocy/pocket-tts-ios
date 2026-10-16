@@ -203,8 +203,8 @@ pub type CausalSelfAttention = MultiHeadAttention;
 /// Uses combined in_proj for Q/K/V instead of separate projections
 #[derive(Debug)]
 pub struct FusedMultiHeadAttention {
-    in_proj: Linear,
-    out_proj: Linear,
+    in_proj: super::qlinear::QLinear,
+    out_proj: super::qlinear::QLinear,
     num_heads: usize,
     head_dim: usize,
     scale: f32,
@@ -215,8 +215,8 @@ impl FusedMultiHeadAttention {
         let head_dim = hidden_size / num_heads;
 
         // Kyutai Pocket uses in_proj (combined QKV) and out_proj - NO BIAS
-        let in_proj = candle_nn::linear_no_bias(hidden_size, hidden_size * 3, vb.pp("in_proj"))?;
-        let out_proj = candle_nn::linear_no_bias(hidden_size, hidden_size, vb.pp("out_proj"))?;
+        let in_proj = super::qlinear::QLinear::new(hidden_size, hidden_size * 3, false, vb.pp("in_proj"))?;
+        let out_proj = super::qlinear::QLinear::new(hidden_size, hidden_size, false, vb.pp("out_proj"))?;
 
         Ok(Self {
             in_proj,

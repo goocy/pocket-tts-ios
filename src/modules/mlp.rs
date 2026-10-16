@@ -35,15 +35,15 @@ impl Module for MLP {
 /// Uses linear1/linear2 naming with GELU activation
 #[derive(Debug)]
 pub struct SimpleMLP {
-    linear1: Linear,
-    linear2: Linear,
+    linear1: super::qlinear::QLinear,
+    linear2: super::qlinear::QLinear,
 }
 
 impl SimpleMLP {
     pub fn new(hidden_size: usize, intermediate_size: usize, vb: VarBuilder) -> Result<Self> {
         // Kyutai Pocket uses linear1 (up) and linear2 (down) naming - NO BIAS
-        let linear1 = candle_nn::linear_no_bias(hidden_size, intermediate_size, vb.pp("linear1"))?;
-        let linear2 = candle_nn::linear_no_bias(intermediate_size, hidden_size, vb.pp("linear2"))?;
+        let linear1 = super::qlinear::QLinear::new(hidden_size, intermediate_size, false, vb.pp("linear1"))?;
+        let linear2 = super::qlinear::QLinear::new(intermediate_size, hidden_size, false, vb.pp("linear2"))?;
 
         Ok(Self { linear1, linear2 })
     }
