@@ -298,6 +298,7 @@ impl PocketTTSModel {
     /// potentially different audio characteristics.
     pub fn synthesize(&mut self, text: &str) -> std::result::Result<Vec<f32>, PocketTTSError> {
         eprintln!("[PocketTTS] synthesize called with text len: {}", text.len());
+        let prof_start = std::time::Instant::now();
 
         // Tokenize text
         let token_ids = self.tokenizer.encode(text)?;
@@ -337,10 +338,13 @@ impl PocketTTSModel {
             None
         };
         let noise_ref = self.noise_tensors.as_deref();
+        let prof_lm = std::time::Instant::now();
         let latents = self
             .flowlm
             .generate_latents(&token_tensor, voice, num_flow_steps, self.config.temperature, seed, noise_ref)
             .map_err(|e| PocketTTSError::InferenceFailed(format!("FlowLM: {}", e)))?;
+        let prof_lm_ms = prof_lm.elapsed().as_secs_f64() * 1e3;
+        let prof_frames = latents.dim(1).unwrap_or(0);
         eprintln!("[PocketTTS] latents shape: {:?}", latents.dims());
 
         // DIAGNOSTIC: Log latent statistics to verify FlowLM output quality
@@ -370,6 +374,7 @@ impl PocketTTSModel {
         // IMPORTANT: The decoder transformer uses NON-CAUSAL attention, so it must
         // process the full sequence at once (not frame-by-frame with KV cache)
         eprintln!("[PocketTTS] decoding with Mimi (batch transformer, streaming SEANet)...");
+        let prof_mimi = std::time::Instant::now();
         let latents = latents
             .to_device(&self.mimi_device)
             .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
@@ -380,7 +385,25 @@ impl PocketTTSModel {
         let audio = audio
             .to_device(&self.device)
             .map_err(|e| PocketTTSError::InferenceFailed(e.to_string()))?;
+        let prof_mimi_ms = prof_mimi.elapsed().as_secs_f64() * 1e3;
         eprintln!("[PocketTTS] audio tensor shape: {:?}", audio.dims());
+        {
+            use crate::prof;
+            let samples = audio.dim(1).unwrap_or(0);
+            eprintln!(
+                "[PROF] frames={} audio_ms={:.0} total_ms={:.0} flowlm_ms={:.0} (lm_step={:.0} flownet={:.0}) mimi_ms={:.0} (upsample={:.0} transformer={:.0} seanet={:.0})",
+                prof_frames,
+                samples as f64 / 24.0,
+                prof_start.elapsed().as_secs_f64() * 1e3,
+                prof_lm_ms,
+                prof::take_ms(&prof::FLOWLM_STEP),
+                prof::take_ms(&prof::FLOWNET),
+                prof_mimi_ms,
+                prof::take_ms(&prof::MIMI_UPSAMPLE),
+                prof::take_ms(&prof::MIMI_TRANSFORMER),
+                prof::take_ms(&prof::MIMI_SEANET),
+            );
+        }
 
         // Note: Amplitude scaling is no longer needed after fixing SEANet to use batch mode
         // which produces correct amplitude (~0.4-0.5) matching Python's streaming output

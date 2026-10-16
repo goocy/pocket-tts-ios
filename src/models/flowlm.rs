@@ -494,6 +494,7 @@ impl FlowLM {
             // Project latent to hidden dimension
             let latent_hidden = self.input_linear.forward(&current_latent)?; // [1, 1, 1024]
 
+            let _prof_step = crate::prof::Timer::start(&crate::prof::FLOWLM_STEP);
             // Run through transformer (using KV cache)
             let mut step_hidden = latent_hidden.clone();
 
@@ -582,6 +583,7 @@ impl FlowLM {
             let step_seed = seed.map(|s| s.wrapping_add(step as u64));
             // Offset by 1: noise_step_000 = Python's text prompting (discarded)
             let noise_override = noise_tensors.and_then(|nt| nt.get(step + 1));
+            drop(_prof_step);
             let next_normalized =
                 self.flow_net
                     .generate(&cond, num_flow_steps, temperature, &self.device, step_seed, noise_override)?;

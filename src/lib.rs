@@ -13,6 +13,7 @@ pub mod engine;
 pub mod error;
 pub mod models;
 pub mod modules;
+pub mod prof;
 pub mod quantized_model;
 pub mod tokenizer;
 

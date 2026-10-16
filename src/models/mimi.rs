@@ -1197,6 +1197,7 @@ impl MimiDecoder {
         // goes through in chunks of `mimi_chunk_frames()` frames instead of
         // `seq` calls of one frame (each of which candle ran as 512 separate
         // depthwise group convs).
+        let prof_up = crate::prof::Timer::start(&crate::prof::MIMI_UPSAMPLE);
         let mut upsampled_chunks: Vec<Tensor> = Vec::with_capacity(1);
         let chunk_frames = mimi_chunk_frames();
         let mut frame_idx = 0;
@@ -1220,7 +1221,11 @@ impl MimiDecoder {
         let x = x.transpose(1, 2)?;
 
         // Step 5: Decoder transformer (batch mode - NON-CAUSAL)
+        drop(prof_up);
+        let prof_tr = crate::prof::Timer::start(&crate::prof::MIMI_TRANSFORMER);
         let x = self.decoder_transformer.forward(&x)?;
+        drop(prof_tr);
+        let _prof_se = crate::prof::Timer::start(&crate::prof::MIMI_SEANET);
 
         // Step 6: Transpose for SEANet: [batch, dim, seq*16]
         let x = x.transpose(1, 2)?;

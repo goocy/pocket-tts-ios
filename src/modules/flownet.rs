@@ -334,6 +334,7 @@ impl FlowNet {
         noise_override: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (batch_size, seq_len, _) = hidden.dims3()?;
+        let _prof = crate::prof::Timer::start(&crate::prof::FLOWNET);
 
         // Get conditioning embedding
         let cond = self.cond_embed.forward(hidden)?; // [batch, seq, 512]
