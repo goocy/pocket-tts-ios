@@ -510,19 +510,20 @@ impl DecoderTransformerLayer {
         //   attend if: pos_k >= 0 AND delta >= 0 AND delta < context
         // This creates a causal mask where each position attends to at most
         // `context` preceding positions (including itself).
+        //
+        // Computed in tiles of queries rather than as one
+        // [batch, heads, seq, seq] score matrix. The window means every row of
+        // that matrix is almost entirely -inf, yet materialising it — and the
+        // masked copy, the softmax's exp and its result — costs 8·seq²·4 bytes
+        // each, held simultaneously. At 16 s of audio (seq = 3200) that is
+        // ~1.6 GB of temporaries on top of the model, which crosses the
+        // per-process limit on a 4 GB iPhone and gets the app jetsammed
+        // mid-sentence; an 8 GB iPhone 16 Pro dies at ~25 s. Tiling keeps every
+        // temporary under [heads, tile, tile + context] and produces the same
+        // numbers: each row sees the same finite scores, mask and softmax, only
+        // the -inf entries that never contributed are no longer stored.
         let scale = (self.head_dim as f64).sqrt();
-        let attn = q.matmul(&k.transpose(2, 3)?)?;
-        let attn = (attn / scale)?;
-
-        // Build causal + context window mask: [1, 1, seq, seq]
-        // mask[i][j] = true if i >= j AND (i - j) < context
-        let mask = Self::build_causal_context_mask(seq, self.context, device)?;
-        // Apply mask: where mask is false (should NOT attend), set to -inf
-        let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?.broadcast_as(attn.shape())?;
-        let attn = mask.broadcast_as(attn.shape())?.where_cond(&attn, &neg_inf)?;
-
-        let attn = candle_nn::ops::softmax(&attn, 3)?;
-        let attn_out = attn.matmul(&v)?;
+        let attn_out = Self::windowed_attention(&q, &k, &v, self.context, scale, device)?;
 
         // Reshape back
         let attn_out = attn_out.permute((0, 2, 1, 3))?; // [batch, seq, heads, head_dim]
@@ -542,6 +543,53 @@ impl DecoderTransformerLayer {
         // Apply layer scale and residual
         let h = h.broadcast_mul(&self.layer_scale_2)?;
         x + h
+    }
+
+    /// Causal, windowed attention — mask[i][j] = (i >= j) AND (i - j < context)
+    /// — evaluated one tile of queries at a time so that no temporary is ever
+    /// larger than [batch, heads, tile, tile + context]. See `forward` for why.
+    ///
+    /// q, k, v: [batch, heads, seq, head_dim]. Returns [batch, heads, seq, head_dim].
+    fn windowed_attention(
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        context: usize,
+        scale: f64,
+        device: &Device,
+    ) -> Result<Tensor> {
+        // 256 queries against at most 256 + 249 keys: ~4 MB per score tensor.
+        const TILE: usize = 256;
+        let seq = q.dim(2)?;
+        let mut tiles: Vec<Tensor> = Vec::with_capacity((seq + TILE - 1) / TILE);
+        let mut start = 0;
+        while start < seq {
+            let len = usize::min(TILE, seq - start);
+            // A query at position p may attend to keys in (p - context, p], so
+            // this tile's queries reach keys from (start + 1 - context) up to
+            // (start + len - 1). Anything outside is masked anyway; leaving it
+            // out of the tile is what bounds the memory.
+            let k_start = (start + 1).saturating_sub(context);
+            let k_len = start + len - k_start;
+
+            let q_tile = q.narrow(2, start, len)?.contiguous()?;
+            let k_tile = k.narrow(2, k_start, k_len)?.contiguous()?;
+            let v_tile = v.narrow(2, k_start, k_len)?.contiguous()?;
+
+            let attn = q_tile.matmul(&k_tile.transpose(2, 3)?.contiguous()?)?;
+            let attn = (attn / scale)?;
+
+            // Same mask the streaming path uses: queries at absolute positions
+            // start.., keys at k_start.., causal and limited to `context`.
+            let mask = Self::build_streaming_causal_mask(len, k_len, start, context, device)?;
+            let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?.broadcast_as(attn.shape())?;
+            let attn = mask.broadcast_as(attn.shape())?.where_cond(&attn, &neg_inf)?;
+
+            let attn = candle_nn::ops::softmax(&attn, 3)?;
+            tiles.push(attn.matmul(&v_tile)?);
+            start += len;
+        }
+        Tensor::cat(&tiles, 2)
     }
 
     /// Build a causal + context window attention mask.
