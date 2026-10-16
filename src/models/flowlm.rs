@@ -702,14 +702,24 @@ impl FlowLM {
 
         // Phase 1: Process voice embeddings FIRST (if provided)
         if let Some(voice) = voice_embedding {
-            let voice_emb = voice.embedding().unsqueeze(0)?;
-            let voice_emb = voice_emb.broadcast_as((batch_size, voice_emb.dim(1)?, voice_emb.dim(2)?))?;
+            if let Some(state) = voice.kv_state() {
+                // The v2/v3 voice format, loaded exactly as `generate_latents`
+                // loads it: the voice's KV state goes straight into the caches.
+                for (i, (k, v)) in state.layers.iter().enumerate() {
+                    if i < self.kv_caches.len() {
+                        self.kv_caches[i].set(k.clone(), v.clone());
+                    }
+                }
+            } else {
+                let voice_emb = voice.embedding().unsqueeze(0)?;
+                let voice_emb = voice_emb.broadcast_as((batch_size, voice_emb.dim(1)?, voice_emb.dim(2)?))?;
 
-            let mut hidden = voice_emb;
-            for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
+                let mut hidden = voice_emb;
+                for (i, layer) in self.layers.iter().enumerate() {
+                    hidden = layer.forward(&hidden, &self.rotary, Some(&mut self.kv_caches[i]), None)?;
+                }
+                let _ = self.final_norm.forward(&hidden)?;
             }
-            let _ = self.final_norm.forward(&hidden)?;
         }
 
         // Phase 2: Process text embeddings (appends to KV cache)
