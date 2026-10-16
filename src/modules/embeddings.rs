@@ -204,27 +204,30 @@ impl VoiceEmbedding {
     }
 }
 
-/// Voice embedding bank: every voice file present in the model's voices folder.
+/// Voice bank: every voice file in the model's voices folder, by id.
+///
+/// Only the folder listing is read when the model loads; a voice's state is
+/// read from its file when it is selected (`PocketTTSModel::configure`), and
+/// only that one is held.
 #[derive(Debug)]
 pub struct VoiceBank {
-    voices: Vec<VoiceEmbedding>,
-    /// The id each voice was loaded under, parallel to
-    /// `voices`. A voice is addressed by this id and never by its position,
-    /// so installing or deleting one cannot silently re-point another.
+    /// A voice is addressed by this id, the stem of its file, and never by
+    /// its position, so installing or deleting one cannot silently re-point
+    /// another. Parallel to `paths`.
     ids: Vec<String>,
-    voice_dim: usize,
+    paths: Vec<std::path::PathBuf>,
 }
 
 impl VoiceBank {
-    pub fn new(voice_dim: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            voices: Vec::new(),
             ids: Vec::new(),
-            voice_dim,
+            paths: Vec::new(),
         }
     }
 
-    /// Load every voice in a directory, each under its own id.
+    /// Lists every voice in a directory, each under its own id, without
+    /// reading any of them.
     ///
     /// A voice *is* its id: the file stem, so `anna.safetensors` is `"anna"`
     /// and a variant state such as `anna@0.9.safetensors` is `"anna@0.9"`.
@@ -234,50 +237,33 @@ impl VoiceBank {
     /// unloadable. Nothing about the order is load-bearing, and no client has
     /// to mirror a list kept here.
     ///
-    /// Files are taken in byte-wise filename order purely so `ids()` reads the
-    /// same way twice; correctness does not depend on it.
-    pub fn load_from_dir(dir: &std::path::Path, device: &Device) -> Result<Self> {
-        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().map(|e| e == "safetensors").unwrap_or(false))
-                    .collect()
-            })
-            .unwrap_or_default();
+    /// Files are taken in byte-wise filename order so `ids()` reads the same
+    /// way twice, and so the voice an empty id selects is always the same.
+    pub fn index_dir(dir: &std::path::Path) -> Result<Self> {
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
+            .map(|entry| entry.map(|e| e.path()))
+            .collect::<std::io::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|p| p.extension().map(|e| e == "safetensors").unwrap_or(false))
+            .collect();
         paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
-        let mut voices = Vec::with_capacity(paths.len());
-        let mut ids = Vec::with_capacity(paths.len());
-        let mut voice_dim = 512; // Default
+        let ids = paths
+            .iter()
+            .map(|p| {
+                p.file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+                    .ok_or_else(|| candle_core::Error::Msg(format!("voice file name is not UTF-8: {:?}", p)))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        for path in &paths {
-            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let voice = VoiceEmbedding::from_file(path, device)?;
-            voice_dim = voice.voice_dim();
-            voices.push(voice);
-            ids.push(id.to_string());
-        }
-
-        Ok(Self {
-            voices,
-            ids,
-            voice_dim,
-        })
+        Ok(Self { ids, paths })
     }
 
-    /// Get voice by index
-    pub fn get(&self, index: usize) -> Option<&VoiceEmbedding> {
-        self.voices.get(index)
-    }
-
-    /// The position of the voice loaded under `id`, for
-    /// resolving a configured voice id against the bank that is actually
-    /// loaded. The index never leaves the Rust side.
-    pub fn index_of(&self, id: &str) -> Option<usize> {
-        self.ids.iter().position(|known| known == id)
+    /// The file of the voice listed under `id`.
+    pub fn path_of(&self, id: &str) -> Option<&std::path::Path> {
+        self.ids.iter().position(|known| known == id).map(|i| self.paths[i].as_path())
     }
 
     /// Every id in the bank, for error messages and for an app to show what
@@ -286,17 +272,13 @@ impl VoiceBank {
         &self.ids
     }
 
-    /// Number of loaded voices
+    /// Number of listed voices
     pub fn len(&self) -> usize {
-        self.voices.len()
+        self.ids.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.voices.is_empty()
-    }
-
-    pub fn voice_dim(&self) -> usize {
-        self.voice_dim
+        self.ids.is_empty()
     }
 }
 

@@ -27,10 +27,11 @@ pub struct PocketTTSModel {
     voice_bank: VoiceBank,
     device: Device,
     config: TTSConfig,
-    /// `config.voice_id` resolved against `voice_bank` by
-    /// `configure`, so the lookup happens once, against the bank that is
-    /// loaded, and a stale index can never reach a render.
-    voice_slot: usize,
+    /// The id `config.voice_id` resolved to by `configure` (an empty id is
+    /// the bank's first), and that voice's state, read from its file then.
+    /// It is the only voice held in memory.
+    voice_id: String,
+    voice: VoiceEmbedding,
     custom_voice: Option<VoiceEmbedding>,
     /// Pre-loaded noise tensors for correlation testing.
     /// When set, these are used instead of random noise during FlowNet generation.
@@ -74,10 +75,18 @@ impl PocketTTSModel {
         let tokenizer_path = model_dir.join("tokenizer.model");
         let tokenizer = PocketTokenizer::from_file(&tokenizer_path)?;
 
-        // Load voice embeddings
+        // List the voices, and read only the one an unconfigured model speaks
+        // in: the bank's first.
         let voices_dir = model_dir.join("voices");
-        let voice_bank = VoiceBank::load_from_dir(&voices_dir, device)
-            .map_err(|e| PocketTTSError::ModelLoadFailed(format!("Failed to load voices: {}", e)))?;
+        let voice_bank = VoiceBank::index_dir(&voices_dir)
+            .map_err(|e| PocketTTSError::ModelLoadFailed(format!("Failed to list voices: {}", e)))?;
+        let voice_id = voice_bank
+            .ids()
+            .first()
+            .cloned()
+            .ok_or_else(|| PocketTTSError::ModelLoadFailed(format!("no voice files in {:?}", voices_dir)))?;
+        let voice = Self::read_voice(&voice_bank, &voice_id, device)
+            .map_err(|e| PocketTTSError::ModelLoadFailed(e.to_string()))?;
 
         // Initialize model components
         let flowlm_config = FlowLMConfig::default();
@@ -130,7 +139,8 @@ impl PocketTTSModel {
             voice_bank,
             device: device.clone(),
             config: TTSConfig::default(),
-            voice_slot: 0,
+            voice_id,
+            voice,
             custom_voice: None,
             noise_tensors: None,
         })
@@ -138,31 +148,38 @@ impl PocketTTSModel {
 
     /// Configure synthesis parameters
     ///
-    /// Also resolves `config.voice_id` against the loaded bank. A voice that
-    /// is not installed is refused here, by name, instead of falling through
-    /// to a render with no voice embedding at all — which is what an
-    /// out-of-range index used to do at the four `voice_bank.get` sites below,
-    /// silently.
+    /// Also resolves `config.voice_id` against the bank and reads that
+    /// voice's file, unless it is the voice already held. A voice that is not
+    /// installed is refused here, by name, instead of falling through to a
+    /// render with no voice embedding at all.
     pub fn configure(&mut self, config: TTSConfig) -> std::result::Result<(), PocketTTSError> {
         config.validate().map_err(PocketTTSError::InvalidConfig)?;
 
-        let slot = if config.voice_id.is_empty() {
-            0
+        let id = if config.voice_id.is_empty() {
+            self.voice_bank.ids()[0].clone()
         } else {
-            self.voice_bank
-                .index_of(&config.voice_id)
-                .ok_or_else(|| {
-                    PocketTTSError::InvalidConfig(format!(
-                        "no voice with id '{}' is installed; loaded voices: {}",
-                        config.voice_id,
-                        self.voice_bank.ids().join(", ")
-                    ))
-                })?
+            config.voice_id.clone()
         };
+        if id != self.voice_id {
+            self.voice = Self::read_voice(&self.voice_bank, &id, &self.device)?;
+            self.voice_id = id;
+        }
 
         self.config = config;
-        self.voice_slot = slot;
         Ok(())
+    }
+
+    /// The state of the voice listed under `id`, read from its file.
+    fn read_voice(bank: &VoiceBank, id: &str, device: &Device) -> std::result::Result<VoiceEmbedding, PocketTTSError> {
+        let path = bank.path_of(id).ok_or_else(|| {
+            PocketTTSError::InvalidConfig(format!(
+                "no voice with id '{}' is installed; installed voices: {}",
+                id,
+                bank.ids().join(", ")
+            ))
+        })?;
+        VoiceEmbedding::from_file(path, device)
+            .map_err(|e| PocketTTSError::InvalidConfig(format!("voice '{}' could not be read from {:?}: {}", id, path, e)))
     }
 
     /// Set custom voice from reference audio embedding
@@ -344,7 +361,7 @@ impl PocketTTSModel {
         let voice = if let Some(ref custom) = self.custom_voice {
             Some(custom)
         } else {
-            self.voice_bank.get(self.voice_slot)
+            Some(&self.voice)
         };
         eprintln!("[PocketTTS] voice embedding loaded: {}", voice.is_some());
 
@@ -496,7 +513,7 @@ impl PocketTTSModel {
         let voice = if let Some(ref custom) = self.custom_voice {
             Some(custom)
         } else {
-            self.voice_bank.get(self.voice_slot)
+            Some(&self.voice)
         };
 
         // Pre-extract normalization tensors (to avoid borrowing self.flowlm in callback)
@@ -763,7 +780,7 @@ impl PocketTTSModel {
         let voice = if let Some(ref custom) = self.custom_voice {
             Some(custom)
         } else {
-            self.voice_bank.get(self.voice_slot)
+            Some(&self.voice)
         };
 
         // Reset caches for new sequence
@@ -834,7 +851,7 @@ impl PocketTTSModel {
         let voice = if let Some(ref custom) = self.custom_voice {
             Some(custom)
         } else {
-            self.voice_bank.get(self.voice_slot)
+            Some(&self.voice)
         };
 
         self.flowlm.reset_cache();

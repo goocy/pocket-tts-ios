@@ -161,17 +161,34 @@ mod embedding_tests {
 
     #[test]
     fn test_voice_bank_new() {
-        let bank = VoiceBank::new(512);
+        let bank = VoiceBank::new();
         assert_eq!(bank.len(), 0);
         assert!(bank.is_empty());
-        assert_eq!(bank.voice_dim(), 512);
+        assert!(bank.path_of("alba").is_none());
     }
 
     #[test]
-    fn test_voice_bank_get_empty() {
-        let bank = VoiceBank::new(512);
-        assert!(bank.get(0).is_none());
-        assert!(bank.get(7).is_none());
+    fn test_voice_bank_index_reads_no_file() {
+        let dir = std::env::temp_dir().join(format!("voice_bank_index_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Not valid safetensors: indexing must not open them.
+        std::fs::write(dir.join("vera.safetensors"), b"not a voice").unwrap();
+        std::fs::write(dir.join("anna@0.9.safetensors"), b"not a voice").unwrap();
+        std::fs::write(dir.join("anna.safetensors"), b"not a voice").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"ignored").unwrap();
+
+        let bank = VoiceBank::index_dir(&dir).unwrap();
+        assert_eq!(bank.ids(), &["anna", "anna@0.9", "vera"]);
+        assert_eq!(bank.path_of("anna@0.9").unwrap(), dir.join("anna@0.9.safetensors"));
+        assert!(bank.path_of("notes").is_none());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_voice_bank_index_missing_dir_fails() {
+        let dir = std::env::temp_dir().join("voice_bank_index_no_such_dir");
+        assert!(VoiceBank::index_dir(&dir).is_err());
     }
 }
 
