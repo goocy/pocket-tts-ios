@@ -1135,20 +1135,19 @@ impl MimiDecoder {
         // output_proj has k=1, so it's stateless
         let x = self.output_proj.forward(&x)?;
 
-        // Step 3: Process frame by frame
-        let mut audio_chunks: Vec<Tensor> = Vec::with_capacity(seq);
+        // Step 3: the whole batch in one pass rather than frame by frame.
+        // Every stage here is chunk-size agnostic (the overlap-add buffers, the
+        // conv contexts and the transformer's KV cache all carry across calls),
+        // so one pass over `seq` frames gives the same samples as `seq` passes
+        // over one, without paying per-call overhead `seq` times.
+        let mut audio_chunks: Vec<Tensor> = Vec::with_capacity(1);
 
-        for frame_idx in 0..seq {
-            // Extract single latent frame: [batch, 512, 1]
-            let frame = x.narrow(2, frame_idx, 1)?;
+        // With `seq == 0` there is nothing to decode.
+        if seq > 0 {
+            // 3a. Streaming upsample with persistent state: [batch, 512, seq] -> [batch, 512, seq * 16]
+            let upsampled = self.upsample_convtr.forward_streaming(&x, &mut state.upsample_state)?;
 
-            // 3a. Streaming upsample with persistent state: [batch, 512, 1] -> [batch, 512, 16]
-            let upsampled = self.upsample_convtr.forward_streaming(&frame, &mut state.upsample_state)?;
-            if upsampled.dim(2)? == 0 {
-                continue;
-            }
-
-            // 3b. Transpose for transformer: [batch, 16, 512]
+            // 3b. Transpose for transformer: [batch, seq * 16, 512]
             let x = upsampled.transpose(1, 2)?;
 
             // 3c. Streaming transformer with KV cache (persists across calls via self)
