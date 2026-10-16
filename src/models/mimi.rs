@@ -441,6 +441,10 @@ struct DecoderTransformerLayer {
     // Streaming state (KV cache)
     k_cache: Option<Tensor>,
     v_cache: Option<Tensor>,
+    /// Absolute position of the next streamed step. The cache is trimmed to
+    /// the context window, so its length stops being the position once a
+    /// sequence outgrows the window (250 steps, 1.25 s of audio).
+    position: usize,
 }
 
 impl DecoderTransformerLayer {
@@ -476,6 +480,7 @@ impl DecoderTransformerLayer {
             context,
             k_cache: None,
             v_cache: None,
+            position: 0,
         })
     }
 
@@ -700,8 +705,11 @@ impl DecoderTransformerLayer {
         let (batch, seq, dim) = x.dims3()?;
         let device = x.device();
 
-        // Get current cache length (for RoPE offset)
-        let offset = self.k_cache.as_ref().map_or(0, |k| k.dim(2).unwrap_or(0));
+        // The absolute position, not the cache length: the cache is trimmed to
+        // `context`, so from the 251st step on its length would rotate every
+        // chunk as if it sat at position 250, and the keys already cached
+        // would disagree with the new ones.
+        let offset = self.position;
 
         // Self-attention
         let h = self.norm1.forward(x)?;
@@ -730,17 +738,24 @@ impl DecoderTransformerLayer {
             _ => (k, v.clone()),
         };
 
-        // Trim KV cache to context window to prevent unbounded growth
-        // and to match Python's circular buffer behavior
+        // Attend over everything held, and trim afterwards. Trimming to
+        // `context` first is only right for a chunk of one step: the first
+        // query of a longer chunk reaches back `context - 1` keys before
+        // *itself*, which a cache cut to the last `context` keys
+        // of the whole chunk no longer has. The mask below does the windowing.
+        // What the next chunk can still need is the last `context - 1` keys.
         let cache_len = k_full.dim(2)?;
-        let (k_ctx, v_ctx) = if cache_len > self.context {
-            let start = cache_len - self.context;
-            (k_full.narrow(2, start, self.context)?, v_full.narrow(2, start, self.context)?)
+        let keep = self.context.saturating_sub(1);
+        if cache_len > keep {
+            let start = cache_len - keep;
+            self.k_cache = Some(k_full.narrow(2, start, keep)?.contiguous()?);
+            self.v_cache = Some(v_full.narrow(2, start, keep)?.contiguous()?);
         } else {
-            (k_full.clone(), v_full.clone())
-        };
-        self.k_cache = Some(k_ctx.clone());
-        self.v_cache = Some(v_ctx.clone());
+            self.k_cache = Some(k_full.clone());
+            self.v_cache = Some(v_full.clone());
+        }
+        self.position = offset + seq;
+        let (k_ctx, v_ctx) = (k_full, v_full);
 
         // Build causal + context mask for streaming
         // Q positions: offset..offset+seq
@@ -823,6 +838,7 @@ impl DecoderTransformerLayer {
     fn reset_cache(&mut self) {
         self.k_cache = None;
         self.v_cache = None;
+        self.position = 0;
     }
 }
 
