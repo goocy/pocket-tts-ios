@@ -73,20 +73,20 @@ impl MultiHeadAttention {
         let k = k.transpose(1, 2)?;
         let v = v.transpose(1, 2)?;
 
-        // Update KV cache if provided
-        let (k, v) = if let Some(cache) = kv_cache {
+        // Update KV cache if provided; either way k_t is [batch, heads, head_dim, kv_len]
+        let (k_t, v) = if let Some(cache) = kv_cache {
             cache.update(k, v)?
         } else {
-            (k, v)
+            (k.transpose(2, 3)?.contiguous()?, v.contiguous()?)
         };
 
         // Attention scores: Q @ K^T
-        let attn_weights = q.matmul(&k.transpose(2, 3)?)?;
+        let attn_weights = q.contiguous()?.matmul(&k_t)?;
         let attn_weights = (attn_weights * self.scale as f64)?;
 
         // Apply causal mask if needed
         let attn_weights = if causal_mask {
-            let mask = self.create_causal_mask(seq_len, k.dim(2)?, x.device())?;
+            let mask = self.create_causal_mask(seq_len, k_t.dim(3)?, x.device())?;
             attn_weights.broadcast_add(&mask)?
         } else {
             attn_weights
@@ -128,40 +128,53 @@ impl MultiHeadAttention {
 /// KV Cache for efficient autoregressive generation
 #[derive(Debug)]
 pub struct KVCache {
-    k_cache: Option<Tensor>,
+    /// Keys are cached already transposed, `[batch, heads, head_dim, seq]`,
+    /// so `q.matmul(k_t)` reads a contiguous operand every step. Caching
+    /// `[batch, heads, seq, head_dim]` and transposing per step gives a
+    /// strided view the gemm crate tolerates but Accelerate's sgemm rejects —
+    /// and copying it each step cost ~2.5 ms per frame on an A18.
+    k_t_cache: Option<Tensor>,
     v_cache: Option<Tensor>,
 }
 
 impl KVCache {
     pub fn new() -> Self {
         Self {
-            k_cache: None,
+            k_t_cache: None,
             v_cache: None,
         }
     }
 
     pub fn seq_len(&self) -> usize {
-        self.k_cache.as_ref().map(|k| k.dim(2).unwrap_or(0)).unwrap_or(0)
+        self.k_t_cache.as_ref().map(|k| k.dim(3).unwrap_or(0)).unwrap_or(0)
     }
 
+    /// Appends `k` and `v` (both `[batch, heads, seq, head_dim]`) and returns
+    /// the full cache as `(k_t, v)` with `k_t` transposed to
+    /// `[batch, heads, head_dim, seq]`; both are contiguous.
     pub fn update(&mut self, k: Tensor, v: Tensor) -> Result<(Tensor, Tensor)> {
-        let (k_out, v_out) = match (&self.k_cache, &self.v_cache) {
+        // Both inputs contiguous so `cat` takes its contiguous fast path and
+        // returns contiguous tensors; with a strided input it would return a
+        // transposed view instead, which Accelerate's sgemm rejects.
+        let k_t = k.transpose(2, 3)?.contiguous()?;
+        let v = v.contiguous()?;
+        let (k_out, v_out) = match (&self.k_t_cache, &self.v_cache) {
             (Some(k_cache), Some(v_cache)) => {
-                let k_new = Tensor::cat(&[k_cache, &k], 2)?;
-                let v_new = Tensor::cat(&[v_cache, &v], 2)?;
+                let k_new = Tensor::cat(&[k_cache, &k_t], 3)?.contiguous()?;
+                let v_new = Tensor::cat(&[v_cache, &v], 2)?.contiguous()?;
                 (k_new, v_new)
             },
-            _ => (k, v),
+            _ => (k_t, v),
         };
 
-        self.k_cache = Some(k_out.clone());
+        self.k_t_cache = Some(k_out.clone());
         self.v_cache = Some(v_out.clone());
 
         Ok((k_out, v_out))
     }
 
     pub fn clear(&mut self) {
-        self.k_cache = None;
+        self.k_t_cache = None;
         self.v_cache = None;
     }
 
@@ -172,8 +185,8 @@ impl KVCache {
     /// append along the sequence dimension, and `seq_len()` reflects the preloaded length so
     /// RoPE offsets for following tokens continue from here.
     pub fn set(&mut self, k: Tensor, v: Tensor) {
-        self.k_cache = Some(k);
-        self.v_cache = Some(v);
+        self.k_t_cache = k.transpose(2, 3).and_then(|t| t.contiguous()).ok();
+        self.v_cache = v.contiguous().ok();
     }
 }
 
@@ -249,20 +262,21 @@ impl FusedMultiHeadAttention {
         let k = k.transpose(1, 2)?;
         let v = v.transpose(1, 2)?;
 
-        // Update KV cache if provided
-        let (k, v) = if let Some(cache) = kv_cache {
+        // Update KV cache if provided; either way k_t is [batch, heads, head_dim, kv_len]
+        // and both operands are contiguous (Accelerate's sgemm refuses strided ones).
+        let (k_t, v) = if let Some(cache) = kv_cache {
             cache.update(k, v)?
         } else {
-            (k, v)
+            (k.transpose(2, 3)?.contiguous()?, v.contiguous()?)
         };
 
         // Attention scores: Q @ K^T * scale
-        let attn_weights = q.matmul(&k.transpose(2, 3)?)?;
+        let attn_weights = q.contiguous()?.matmul(&k_t)?;
         let attn_weights = (attn_weights * self.scale as f64)?;
 
         // Apply causal mask if needed
         let attn_weights = if causal_mask {
-            let mask = self.create_causal_mask(seq_len, k.dim(2)?, x.device())?;
+            let mask = self.create_causal_mask(seq_len, k_t.dim(3)?, x.device())?;
             attn_weights.broadcast_add(&mask)?
         } else {
             attn_weights
