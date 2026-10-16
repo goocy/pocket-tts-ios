@@ -72,6 +72,10 @@ name = "quantize"
 path = "src/bin/quantize.rs"
 
 [[bin]]
+name = "stream-probe"
+path = "src/bin/stream_probe.rs"
+
+[[bin]]
 name = "test-tts"
 path = "src/bin/test_tts.rs"
 

@@ -516,10 +516,19 @@ impl PocketTTSModel {
             None
         };
 
-        // Decode batch size - how many latents to accumulate before decoding
-        // Smaller = lower TTFA, larger = more efficient
-        // 4 latents ≈ 320ms of audio, good balance for TTFA
-        let decode_batch_size = 4;
+        // How many latents to gather before decoding them (80 ms of audio
+        // each). Measured on a 16 s sentence with two inference threads,
+        // batches of 2, 4, 8, 12 and 25 all finished within 5% of each other
+        // and of `synthesize`, so there is nothing to buy with a large batch
+        // and the small one keeps the listener's lead even. The first batch is
+        // separate because it is the one the listener waits for.
+        // `ALOUD_STREAM_FIRST` / `ALOUD_STREAM_BATCH` override for measurement.
+        let env_frames = |name: &str, default: usize| {
+            std::env::var(name).ok().and_then(|s| s.parse().ok()).filter(|&n: &usize| n > 0).unwrap_or(default)
+        };
+        let first_batch_size = env_frames("ALOUD_STREAM_FIRST", 4);
+        let later_batch_size = env_frames("ALOUD_STREAM_BATCH", 4);
+        let batches_sent = RefCell::new(0usize);
 
         // Initialize persistent Mimi streaming state ONCE before streaming starts.
         // This state MUST persist across ALL decode batches for proper overlap-add.
@@ -570,7 +579,8 @@ impl PocketTTSModel {
                 // generator runs `frames_after_eos` more steps, and what is
                 // left when it stops is flushed below, marked final.
                 let _ = is_eos;
-                let batch_ready = current_batch.borrow().len() >= decode_batch_size;
+                let wanted = if *batches_sent.borrow() == 0 { first_batch_size } else { later_batch_size };
+                let batch_ready = current_batch.borrow().len() >= wanted;
 
                 if batch_ready {
                     let batch: Vec<Tensor> = current_batch.borrow_mut().drain(..).collect();
@@ -621,6 +631,7 @@ impl PocketTTSModel {
                     };
 
                     // Callback with audio chunk directly
+                    *batches_sent.borrow_mut() += 1;
                     if !audio_vec.is_empty() && !chunk_callback(&audio_vec, false) {
                         *should_continue.borrow_mut() = false;
                         return LatentStreamControl::Stop;
