@@ -13,6 +13,7 @@ pub mod engine;
 pub mod error;
 pub mod models;
 pub mod modules;
+pub mod quantized_model;
 pub mod tokenizer;
 
 // Test modules
@@ -31,6 +32,16 @@ pub use error::PocketTTSError;
 
 // UniFFI scaffolding
 uniffi::include_scaffolding!("pocket_tts");
+
+/// Converts a downloaded `model.safetensors` into `model.q8.gguf`.
+/// See `quantized_model`.
+pub fn quantize_model(source_path: String, destination_path: String) -> Result<(), PocketTTSError> {
+    quantized_model::quantize_model_file(
+        std::path::Path::new(&source_path),
+        std::path::Path::new(&destination_path),
+    )
+    .map_err(|e| PocketTTSError::IoError(format!("quantize: {}", e)))
+}
 
 /// Library version
 pub fn version() -> String {

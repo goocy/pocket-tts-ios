@@ -9,6 +9,26 @@
 use candle_core::quantized::{GgmlDType, QMatMul, QTensor};
 use candle_core::{Module, Result, Tensor};
 use candle_nn::VarBuilder;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// Tensors already quantized on disk (`quantized_model::load_gguf`), keyed by
+/// full name. `QLinear::new` takes its weight from here when present, so the
+/// model constructors need not know which file the pack came from. Filled
+/// before the model is built and drained as it is; one model loads at a time.
+static REGISTRY: Mutex<Option<HashMap<String, Arc<QTensor>>>> = Mutex::new(None);
+
+pub fn register(tensors: HashMap<String, Arc<QTensor>>) {
+    *REGISTRY.lock().unwrap() = Some(tensors);
+}
+
+fn take(name: &str) -> Option<Arc<QTensor>> {
+    REGISTRY.lock().unwrap().as_mut().and_then(|m| m.remove(name))
+}
+
+pub fn clear_registry() {
+    *REGISTRY.lock().unwrap() = None;
+}
 
 #[derive(Debug)]
 pub struct QLinear {
@@ -29,10 +49,18 @@ pub fn selected_dtype() -> Option<GgmlDType> {
 
 impl QLinear {
     pub fn new(in_dim: usize, out_dim: usize, with_bias: bool, vb: VarBuilder) -> Result<Self> {
-        let weight = vb.get((out_dim, in_dim), "weight")?;
-        let inner = match selected_dtype() {
-            Some(dtype) => QMatMul::from_qtensor(QTensor::quantize(&weight, dtype)?)?,
-            None => QMatMul::Tensor(weight),
+        let full_name = format!("{}.weight", vb.prefix());
+        let inner = if let Some(q) = take(&full_name) {
+            if q.shape().dims() != [out_dim, in_dim] {
+                candle_core::bail!("{full_name}: stored shape {:?}, expected [{out_dim}, {in_dim}]", q.shape());
+            }
+            QMatMul::from_arc(q)?
+        } else {
+            let weight = vb.get((out_dim, in_dim), "weight")?;
+            match selected_dtype() {
+                Some(dtype) => QMatMul::from_qtensor(QTensor::quantize(&weight, dtype)?)?,
+                None => QMatMul::Tensor(weight),
+            }
         };
         let bias = if with_bias { Some(vb.get(out_dim, "bias")?) } else { None };
         Ok(Self { inner, bias })

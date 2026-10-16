@@ -664,8 +664,8 @@ fn load_model(model_dir: &Path) -> PocketTTSModel {
     let tokenizer_file = model_dir.join("tokenizer.model");
     let voices_dir = model_dir.join("voices");
 
-    if !model_file.exists() {
-        eprintln!("ERROR: model.safetensors not found in {}", model_dir.display());
+    if !model_file.exists() && !model_dir.join("model.q8.gguf").exists() {
+        eprintln!("ERROR: neither model.safetensors nor model.q8.gguf found in {}", model_dir.display());
         std::process::exit(1);
     }
     if !tokenizer_file.exists() {

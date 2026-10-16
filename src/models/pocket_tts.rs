@@ -39,13 +39,25 @@ impl PocketTTSModel {
     pub fn load<P: AsRef<Path>>(model_dir: P, device: &Device) -> std::result::Result<Self, PocketTTSError> {
         let model_dir = model_dir.as_ref();
 
-        // Load model weights using memory-mapped file
-        let model_path = model_dir.join("model.safetensors");
-
-        // Create VarBuilder from safetensors file
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[&model_path], DType::F32, device)
-                .map_err(|e| PocketTTSError::ModelLoadFailed(e.to_string()))?
+        // A model directory holds either the quantized GGUF (written once by
+        // `quantize_model`) or the downloaded safetensors. See `quantized_model`.
+        let gguf_path = model_dir.join(crate::quantized_model::GGUF_FILE_NAME);
+        let model_path = model_dir.join(crate::quantized_model::SAFETENSORS_FILE_NAME);
+        let plain: Option<std::collections::HashMap<String, Tensor>> = if gguf_path.exists() {
+            Some(
+                crate::quantized_model::load_gguf(&gguf_path, device)
+                    .map_err(|e| PocketTTSError::ModelLoadFailed(e.to_string()))?,
+            )
+        } else {
+            crate::modules::qlinear::clear_registry();
+            None
+        };
+        let vb = match &plain {
+            Some(tensors) => VarBuilder::from_tensors(tensors.clone(), DType::F32, device),
+            None => unsafe {
+                VarBuilder::from_mmaped_safetensors(&[&model_path], DType::F32, device)
+                    .map_err(|e| PocketTTSError::ModelLoadFailed(e.to_string()))?
+            },
         };
 
         // Load tokenizer (SentencePiece .model format)
@@ -68,6 +80,7 @@ impl PocketTTSModel {
         };
         let mimi = MimiDecoder::new(mimi_config, vb.pp("mimi"))
             .map_err(|e| PocketTTSError::ModelLoadFailed(format!("Mimi: {}", e)))?;
+        crate::modules::qlinear::clear_registry();
 
         Ok(Self {
             flowlm,

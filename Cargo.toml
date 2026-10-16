@@ -68,6 +68,10 @@ name = "uniffi-bindgen"
 path = "src/bin/uniffi_bindgen.rs"
 
 [[bin]]
+name = "quantize"
+path = "src/bin/quantize.rs"
+
+[[bin]]
 name = "test-tts"
 path = "src/bin/test_tts.rs"
 

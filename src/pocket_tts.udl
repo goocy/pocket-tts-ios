@@ -5,6 +5,9 @@ namespace pocket_tts_ios {
     // Library version
     string version();
 
+    [Throws=PocketTTSError]
+    void quantize_model(string source_path, string destination_path);
+
     // Available voices
     sequence<PocketVoiceInfo> available_voices();
 };
