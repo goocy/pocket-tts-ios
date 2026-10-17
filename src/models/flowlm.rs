@@ -475,17 +475,17 @@ impl FlowLM {
         // Start with BOS embedding
         let mut current_latent = self.bos_emb.clone().unsqueeze(0)?.unsqueeze(0)?; // [1, 1, 32]
 
-        // Measurement hooks. `ALOUD_TRACE_OUT=<file>` appends, per step,
+        // Measurement hooks. `POCKET_TTS_TRACE_OUT=<file>` appends, per step,
         // the transformer's 1024-float conditioning and the 32-float latent it
-        // then sampled (raw little-endian f32). `ALOUD_FORCE_IN=<file>` reads
+        // then sampled (raw little-endian f32). `POCKET_TTS_FORCE_IN=<file>` reads
         // such a trace and feeds *its* latents back instead of this run's own
         // (teacher forcing), so two builds see identical inputs at every step
         // and their conditioning can be compared position by position.
-        let mut trace_out = std::env::var("ALOUD_TRACE_OUT")
+        let mut trace_out = std::env::var("POCKET_TTS_TRACE_OUT")
             .ok()
             .and_then(|p| std::fs::File::create(p).ok())
             .map(std::io::BufWriter::new);
-        let forced: Option<Vec<Vec<f32>>> = std::env::var("ALOUD_FORCE_IN").ok().and_then(|p| {
+        let forced: Option<Vec<Vec<f32>>> = std::env::var("POCKET_TTS_FORCE_IN").ok().and_then(|p| {
             let bytes = std::fs::read(p).ok()?;
             let floats: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
             Some(floats.chunks_exact(1056).map(|c| c[1024..].to_vec()).collect())

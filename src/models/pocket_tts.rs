@@ -37,7 +37,7 @@ pub struct PocketTTSModel {
     /// When set, these are used instead of random noise during FlowNet generation.
     /// Each tensor corresponds to one autoregressive step.
     noise_tensors: Option<Vec<Tensor>>,
-    /// Where the Mimi decoder lives. Metal when `ALOUD_MIMI_METAL=1`
+    /// Where the Mimi decoder lives. Metal when `POCKET_TTS_MIMI_METAL=1`
     /// and the build has the metal feature; otherwise the model device.
     /// The FlowLM stays on the CPU either way: its per-frame matvecs are too
     /// small to amortise GPU dispatch, while Mimi's convolutions over a whole
@@ -97,7 +97,7 @@ impl PocketTTSModel {
             latent_dim: flowlm_config.latent_dim,
             ..MimiConfig::default()
         };
-        let mimi_device = if std::env::var("ALOUD_MIMI_METAL").map(|v| v == "1").unwrap_or(false) {
+        let mimi_device = if std::env::var("POCKET_TTS_MIMI_METAL").map(|v| v == "1").unwrap_or(false) {
             match Device::new_metal(0) {
                 Ok(d) => {
                     eprintln!("[Mimi] decoder on Metal");
@@ -539,12 +539,12 @@ impl PocketTTSModel {
         // and of `synthesize`, so there is nothing to buy with a large batch
         // and the small one keeps the listener's lead even. The first batch is
         // separate because it is the one the listener waits for.
-        // `ALOUD_STREAM_FIRST` / `ALOUD_STREAM_BATCH` override for measurement.
+        // `POCKET_TTS_STREAM_FIRST` / `POCKET_TTS_STREAM_BATCH` override for measurement.
         let env_frames = |name: &str, default: usize| {
             std::env::var(name).ok().and_then(|s| s.parse().ok()).filter(|&n: &usize| n > 0).unwrap_or(default)
         };
-        let first_batch_size = env_frames("ALOUD_STREAM_FIRST", 4);
-        let later_batch_size = env_frames("ALOUD_STREAM_BATCH", 4);
+        let first_batch_size = env_frames("POCKET_TTS_STREAM_FIRST", 4);
+        let later_batch_size = env_frames("POCKET_TTS_STREAM_BATCH", 4);
         let batches_sent = RefCell::new(0usize);
 
         // Initialize persistent Mimi streaming state ONCE before streaming starts.

@@ -3,7 +3,7 @@
 //!
 //! The FlowLM transformer is 302 MB of f32 weights read once per generated
 //! frame at batch size 1, which is memory-bandwidth-bound on a phone. Q8_0
-//! reads a quarter of that. `ALOUD_QUANT` selects the format at load time:
+//! reads a quarter of that. `POCKET_TTS_QUANT` selects the format at load time:
 //! `Q8_0` (default), `Q4K`, `Q6K`, `Q5K`, `Q4_0`, or `F32` for the original
 //! f32 path.
 use candle_core::quantized::{GgmlDType, QMatMul, QTensor};
@@ -46,13 +46,13 @@ pub struct QLinear {
 /// weights, and it reads a quarter as much. A read-in of ninety tokens is
 /// bound by arithmetic instead, where candle's quantized kernel is a row of
 /// dot products and the f32 path is a proper GEMM. The price is the f32 copy:
-/// 302 MB for FlowLM. `ALOUD_DENSE_PREFILL=1` turns it on.
+/// 302 MB for FlowLM. `POCKET_TTS_DENSE_PREFILL=1` turns it on.
 pub fn dense_prefill() -> bool {
-    matches!(std::env::var("ALOUD_DENSE_PREFILL").as_deref(), Ok("1"))
+    matches!(std::env::var("POCKET_TTS_DENSE_PREFILL").as_deref(), Ok("1"))
 }
 
 pub fn selected_dtype() -> Option<GgmlDType> {
-    match std::env::var("ALOUD_QUANT").as_deref() {
+    match std::env::var("POCKET_TTS_QUANT").as_deref() {
         Ok("F32") | Ok("f32") | Ok("none") => None,
         Ok("Q4_0") => Some(GgmlDType::Q4_0),
         Ok("Q4K") | Ok("Q4_K") => Some(GgmlDType::Q4K),

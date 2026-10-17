@@ -1004,9 +1004,9 @@ impl SEANetDecoder {
 
 /// Latent frames per SEANet/upsampler chunk. 1 reproduces the original
 /// frame-by-frame path; 64 is ~5 s of audio per chunk and bounds the widest
-/// activation to ~30 MB. Overridable with `ALOUD_MIMI_CHUNK` for measurement.
+/// activation to ~30 MB. Overridable with `POCKET_TTS_MIMI_CHUNK` for measurement.
 fn mimi_chunk_frames() -> usize {
-    std::env::var("ALOUD_MIMI_CHUNK").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(64)
+    std::env::var("POCKET_TTS_MIMI_CHUNK").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(64)
 }
 
 /// Mimi VAE Decoder
